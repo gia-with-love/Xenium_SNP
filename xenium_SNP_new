@@ -1,0 +1,499 @@
+```{r}
+#load packages
+library(Seurat)
+library(SpatialExperiment)
+library(ggplot2)
+library(data.table)
+library(rhdf5)
+library(R.utils)
+library(cowplot)
+library(patchwork)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+```
+
+```{r}
+#load original xenium folders from Xiao
+
+mps <- c('MPS1', 'MPS3', 'MPS5', 'MPS8', 'MPS13', 'MPS161', 'MPS162', 'MPS351', 'MPS352', 'MPS43')
+# 
+ mps_list <- c("MPS-1", "MPS-3", "MPS-5", "MPS-8", "MPS-13", "MPS-16_1", "MPS-16_2", "MPS-35_1", "MPS-35_2", "MPS-43")
+
+# Loop through the MPS numbers and load the data
+ for (i in 1:10) {
+   # Construct the file path
+   file_path <- paste0("/Volumes/GML001-Q1851/Xiao/Xenium_dataset/SkinCancer/Xenium/output-XETG00114__0017009__", mps_list[[i]], "__20231129__074525")
+ 
+   # Load the data using LoadXenium
+   assign(mps[[i]], LoadXenium(file_path, fov = "fov", assay = "Xenium"))
+}
+
+```{r}
+xenium_annotated <- readRDS("/Volumes/GML001-Q1851/Andrew_C/SNP_MEL/Xenium_Analysis/annotated_xenium_objs.RDS")
+
+mps_objs <- readRDS("/Volumes/GML001-Q1851/Gianna/mps_objs_xenium.RDS")
+merged_object <- readRDS("/Volumes/GML001-Q1851/Gianna/merged_object_xenium.RDS")
+melanocytes <- readRDS("/Volumes/GML001-Q1851/Gianna/melanocytes_xenium.RDS")
+sub_mps_list <- readRDS("/Volumes/GML001-Q1851/Gianna/sub_mps_list_xenium.RDS")
+
+#saveRDS(mps_objs, "/Volumes/GML001-Q1851/Gianna/mps_objs_xenium.RDS")
+
+#saveRDS(merged_object, "/Volumes/GML001-Q1851/Gianna/merged_object_xenium.RDS")
+```
+
+```{r}
+#merge 16 and 35 because split into 2
+#
+MPS16 <- merge(MPS161, y = MPS162, add.cell.ids = c("MPS161", "MPS162"))
+MPS35 <- merge(MPS351, y = MPS352, add.cell.ids = c("MPS351", "MPS352"))
+
+
+mps_objs <- c(MPS1, MPS3, MPS5, MPS8, MPS13, MPS16, MPS35, MPS43)
+
+```
+
+```{r}
+
+options(repr.plot.width = 10, repr.plot.height = 5)
+
+QC_plots <- list()
+
+for (i in 1:8) {
+  Idents(mps_objs[[i]]) <- "orig.ident"
+  plt <- VlnPlot(mps_objs[[i]], features = c("nCount_Xenium"), pt.size = 0.1) + ggtitle(i)
+  QC_plots[[i]] <- plt
+}
+
+combined_plot <- wrap_plots(QC_plots, ncol = 5)  
+#combined_plot <- plot_grid(plotlist = QC_plots, ncol = 10) 
+
+print(combined_plot)
+```
+
+```{r}
+options(future.globals.maxSize = 4 * 1024^3)
+merged_object <- merge(mps_objs[[1]], y = c(mps_objs[[2]], mps_objs[[3]], mps_objs[[4]], mps_objs[[5]], mps_objs[[6]], mps_objs[[7]], mps_objs[[8]]), add.cell.ids = c("MPS1", "MPS3", "MPS5", "MPS8", "MPS13", "MPS16", "MPS35", "MPS43"))
+
+unique(merged_object@meta.data[["sample"]])
+# 
+# merged_object <- mps_objs[[1]]
+# 
+# for (i in 2:length(mps_objs)) {
+#   merged_object <- merge(merged_object, y = mps_objs[[i]])
+# }
+
+# merged_object <- NormalizeData(merged_object)
+# merged_object <- ScaleData(merged_object)
+
+#merged_object <- SCTransform(merged_object, verbose = T, assay = "Xenium")
+merged_object <- JoinLayers(merged_object)
+# Subset the Seurat object to exclude cells with zero UMIs
+# non_zero_cells <- colnames(counts_data)[cell_sums > 0]
+# merged_object <- subset(merged_object, cells = non_zero_cells)
+
+
+merged_object <- SCTransform(merged_object, assay = "Xenium")
+merged_object <- RunPCA(merged_object, npcs = 30, features = rownames(merged_object))
+merged_object <- RunUMAP(merged_object, dims = 1:30)
+merged_object <- FindNeighbors(merged_object, reduction = "pca", dims = 1:30)
+merged_object <- FindClusters(merged_object, resolution = 0.3)
+
+DimPlot(merged_object, group.by = "sample")
+
+saveRDS(merged_object, "/Volumes/GML001-Q1851/Gianna/merged_object_xenium_final.RDS")
+```
+```{r}
+for (i in 1:8) {
+
+mps_objs[[i]] <- SCTransform(mps_objs[[i]], assay = "Xenium")
+mps_objs[[i]] <- RunPCA(mps_objs[[i]], npcs = 30, features = rownames(mps_objs[[i]]))
+mps_objs[[i]] <- RunUMAP(mps_objs[[i]], dims = 1:30)
+mps_objs[[i]] <- FindNeighbors(mps_objs[[i]], reduction = "pca", dims = 1:30)
+mps_objs[[i]] <- FindClusters(mps_objs[[i]], resolution = 0.3)
+}
+```
+
+```{r}
+
+#deg_findallmarkers <- FindAllMarkers(merged_object,  only.pos = T)
+
+# Save DEGs to a CSV file
+# write.csv(deg_findallmarkers, file = "merged_DEG_results_findall_final.csv", row.names = TRUE)
+# 
+# merged_deg_markers <- FindAllMarkers(
+# +     merged_object,
+# +     min.pct = 0.25,  # Minimum % of cells expressing the gene
+# +     logfc.threshold = 0.25 # Minimum log fold change
+# )
+#write.csv(merged_deg_markers, file = "/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/mel_deg_markers.csv")
+
+# upregulated_merged_deg_markers <- mel_deg_markers %>% filter(avg_log2FC > 0.25 & p_val_adj < 0.05)
+# downregulated_merged_deg_markers <- mel_deg_markers %>% filter(avg_log2FC < -0.25 & p_val_adj < 0.05)
+
+# write.csv(upregulated_mel_genes, file = "/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/upregulated_mel_genes.csv")
+# write.csv(downregulated_mel_genes, file = "/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/downregulated_mel_genes.csv")
+mel_deg_markers <- read.csv("/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/mel_deg_markers.csv")
+
+upregulated_mel_genes <- read.csv("/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/upregulated_mel_genes.csv")
+
+downregulated_mel_genes <- read.csv("/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/downregulated_mel_genes.csv")
+
+library(EnhancedVolcano)
+
+mel_deg_markers <- mel_deg_markers %>% 
+    mutate(significant = ifelse(abs(avg_log2FC) > 1 & p_val_adj < 0.01, "Significant", "Not significant"))
+
+# Order data based on p-value and select top 20 significant genes
+#top_genes <- data %>% 
+#arrange(p_val_adj) %>% 
+#slice_head(n = 30) %>% 
+#pull(genes)
+
+top_genes <- mel_deg_markers %>% 
+    filter(p_val_adj < 0.05, abs(avg_log2FC) > 1) %>% 
+    arrange(p_val_adj) %>% 
+    slice_head(n = 30) %>% 
+    pull(X)
+
+EnhancedVolcano(mel_deg_markers,
+    lab = mel_deg_markers$X,
+    selectLab = top_genes,
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    xlim =c(-6, 6),
+    title = 'enter your title here',
+    pCutoff = 10e-16,
+    FCcutoff = 1.5,
+    cutoffLineType = 'twodash',
+    cutoffLineWidth = 0.8,
+    pointSize = 4.0,
+    labSize = 6.0,
+    # shape = c(1,4, 23,25),
+    colAlpha = 1,
+    cutoffLineCol = 'black',
+    hline = c(10e-20,
+      10e-20 * 10e-30,
+      10e-20 * 10e-60,
+      10e-20 * 10e-90),
+    hlineCol = c('pink', 'hotpink', 'purple', 'black'),
+    hlineType = c('solid', 'longdash', 'dotdash', 'dotted'),
+    hlineWidth = c(1.0, 1.5, 2.0, 2.5),
+    gridlines.major = FALSE,
+    gridlines.minor = FALSE
+    )
+```
+
+```{r}
+img_list <- c("fov", "fov.2", "fov.3", "fov.4", "fov.5", "fov.6", "fov.7", "fov.8", "fov.9", "fov.10")
+
+for (img in img_list){
+  print(ImageDimPlot(merged_object, fov = img))
+}
+```
+
+```{r}
+xenium_annotated <- readRDS("/Volumes/GML001-Q1851/Andrew_C/SNP_MEL/Xenium_Analysis/annotated_xenium_objs.RDS")
+
+for (i in 1:10) {
+    # Access each sample in the list
+    sample1 <- xenium_annotated[[i]]
+    
+    # Add the prefix (e.g., "MPS1_") to cell barcodes
+    sample1 <- RenameCells(sample1, new.names = paste0(mps[[i]], "_",Cells(sample1)))
+    
+    # Save the updated sample back to the list
+    xenium_annotated[[i]] <- sample1
+}
+
+for (i in 1:10) {
+    # Access each sample in the lists
+    sample1 <- xenium_annotated[[i]]
+    sample2 <- sub_mps_list[[i]]
+    
+    # Match cell barcodes between sample1 and sample2
+    matching_cells <- intersect(Cells(sample1), Cells(sample2))
+    
+    # Subset refined_annotation for only matching cells
+    refined_annotation <- sample1@meta.data[matching_cells, "refined_annotation"]
+    
+    # Add refined_annotation to sample2
+    sample2@meta.data$refined_annotation <- NA  # Initialize column with NA
+    sample2@meta.data[matching_cells, "refined_annotation"] <- refined_annotation
+    
+    # Save the updated sample back to the list
+    sub_mps_list[[i]] <- sample2
+}
+
+# Add a new column with cleaned annotations
+for (i in 1:10) {
+    sub_mps_list[[i]]$clean_annotation <- gsub("\\s+\\d+\\.\\d+$", "", sub_mps_list[[i]]$refined_annotation)
+}
+```
+
+```{r}
+#works
+names(sub_d_list) <- c("MPS1", "MPS3", "MPS5", "MPS8", "MPS13", "MPS161", "MPS162", "MPS351", "MPS352", "MPS43")
+
+# Ensure combined_cluster_data is initialized
+combined_cluster_data <- data.frame()
+
+# Loop through the list of subsets
+for (i in 1:length(sub_d_list)) {
+  # Get cluster identities
+  cluster_idents <- Idents(sub_d_list[[i]])
+  
+  # Create a data frame for cluster counts
+  cluster_df <- as.data.frame(table(cluster_idents))
+  colnames(cluster_df) <- c("Cluster", "Count")
+  
+  # Calculate total cells and proportions
+  total_cells <- sum(cluster_df$Count)
+  cluster_df <- cluster_df %>%
+    mutate(Ratio = Count / total_cells,
+           Sample = names(sub_d_list)[i]) # Use the names of sub_d_list as sample identifiers
+  
+  # Combine the data into one data frame
+  combined_cluster_data <- bind_rows(combined_cluster_data, cluster_df)
+}
+
+combined_cluster_data$Sample <- factor(combined_cluster_data$Sample, levels = names(sub_d_list))
+
+# Check if the combined data is created correctly
+print(combined_cluster_data)
+
+# Create the stacked bar plot
+ggplot(combined_cluster_data, aes(x = Sample, y = Ratio, fill = Cluster)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_minimal() +
+  labs(title = "Stacked Bar Plot of Dermal Melanocyte Cell Type Ratios", 
+       x = "Sample", 
+       y = "Proportion of Clusters") +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Xenium skin panel
+melanocyte_genes <- c("BCAN", "CRYAB", "CYB561A3", "DCT", "FRZB", "MLANA", "NSG1", "PMEL", "QPCT", "TFAP2B", "TRPM1", "TYR", "TYRP1")
+
+melanoma_genes <- c("ATF3", "CCND1", "EDNRB", "MITF", "MYC", "PLP1", "TYR")
+
+FeaturePlot(merged_object, features = melanocyte_genes, ncol = 7)
+
+FeaturePlot(merged_object, features = melanoma_genes, ncol = 4)
+```
+
+```{r}
+mel_deg_markers <- FindMarkers(
+     merged_object,
+     ident.1 = "3",
+     ident.2 = "5", # Identify positive markers
+     min.pct = 0.1,  # Minimum % of cells expressing the gene
+     logfc.threshold = 0 # Minimum log fold change
+)
+
+write.csv(mel_deg_markers, file = "/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/mel_deg_markers.csv")
+dermal_up <- mel_deg_markers %>% filter(avg_log2FC > 0.25 & p_val_adj < 0.05)
+junctional_up <- mel_deg_markers %>% filter(avg_log2FC < -0.25 & p_val_adj < 0.05)
+
+write.csv(dermal_up, file = "/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/upregulated_mel_genes.csv")
+write.csv(junctional_up, file = "/Users/giannapavilion/Documents/QIMR/MEL_SNP/xenium/downregulated_mel_genes.csv")
+```
+
+```{r}
+# final actually works pathway
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)  
+
+markers_3_vs_5 <- FindMarkers(
+  object = merged_object,
+  ident.1 = 3,    # Dermal cluster
+  ident.2 = 5,    # Junctional cluster
+  logfc.threshold = 0,  # set to 0 to return all genes; filter later as needed
+  min.pct = 0.1         # or any threshold you prefer
+)
+
+# If using the subset object (melanocyte_sub):
+# markers_3_vs_5 <- FindMarkers(
+#   object = melanocyte_sub,
+#   ident.1 = 3,
+#   ident.2 = 5,
+#   logfc.threshold = 0,
+#   min.pct = 0.1
+# )
+
+# Inspect results
+head(markers_3_vs_5)
+
+# Subset the marker table to find significantly up genes for Cluster 3
+# e.g. p_val_adj <= 0.05 and avg_log2FC >= 0.25
+dermal_up <- rownames(
+  markers_3_vs_5[
+    markers_3_vs_5$p_val_adj <= 0.05 & markers_3_vs_5$avg_log2FC > 0.25,
+  ]
+)
+
+# Subset for genes up in Cluster 5 (junctional)
+junctional_up <- rownames(
+  markers_3_vs_5[
+    markers_3_vs_5$p_val_adj <= 0.05 & markers_3_vs_5$avg_log2FC < -0.25,
+  ]
+)
+
+length(dermal_up)
+length(junctional_up)
+# Dermal (Cluster 3) Up Genes
+dermal_go <- enrichGO(
+  gene          = dermal_up,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",   # assuming your Seurat object uses gene symbols
+  ont           = "BP",       # "BP" = Biological Process
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05
+)
+
+# Junctional (Cluster 5) Up Genes
+junctional_go <- enrichGO(
+  gene          = junctional_up,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05
+)
+
+# View results in R
+head(dermal_go)
+head(junctional_go)
+
+# Bar plots
+barplot(dermal_go, showCategory =10, title = "Dermal (C3) GO-BP Enrichment")
+barplot(junctional_go, showCategory =10,title = "Junctional (C5) GO-BP Enrichment")
+
+# Dot plots
+dotplot(dermal_go, showCategory = 10, title = "Dermal (C3) GO-BP Enrichment")
+dotplot(junctional_go, showCategory = 10, title = "Junctional (C5) GO-BP Enrichment")
+
+```
+
+```{r}
+# results are not great :(
+# each cluster in 10
+markers_10 <- FindMarkers(
+  object = merged_object,
+  ident.1 = 10 , # Cluster 10
+  logfc.threshold = 0,  # set to 0 to return all genes; filter later as needed
+  min.pct = 0.1         # or any threshold you prefer
+)
+
+# If using the subset object (melanocyte_sub):
+# markers_3_vs_5 <- FindMarkers(
+#   object = melanocyte_sub,
+#   ident.1 = 3,
+#   ident.2 = 5,
+#   logfc.threshold = 0,
+#   min.pct = 0.1
+# 
+
+# Inspect results
+head(markers_10)
+
+# Subset the marker table to find significantly up genes for Cluster 3
+# e.g. p_val_adj <= 0.05 and avg_log2FC >= 0.25
+markers_10_up <- rownames(
+  markers_10[
+    markers_10$p_val_adj <= 0.05 & markers_10$avg_log2FC > 0.25,
+  ]
+)
+
+length(markers_10_up)
+
+# Dermal (Cluster 3) Up Genes
+markers_10_go <- enrichGO(
+  gene          = markers_10_up,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",   # assuming your Seurat object uses gene symbols
+  ont           = "BP",       # "BP" = Biological Process
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05
+)
+
+# View results in R
+head(markers_10_go)
+
+
+# Bar plots
+barplot(markers_10_go, showCategory =10, title = "Cluster 10  GO-BP Enrichment")
+
+
+# Dot plots
+dotplot(markers_10_go, showCategory = 10, title = "Cluster 10  GO-BP Enrichment")
+```
+
+```{r}
+
+# https://divingintogeneticsandgenomics.com/post/clustered-dotplot-for-single-cell-rnaseq/
+
+c("PDGFRA","MMP2","MFAP4","SFRP2","CXCL12","COL5A2","IL32","CD52","KLRB1","CXCR4","CD3G","CTSW","CD3E","CD3D","GIMAP7","GZMK","CD40LG","IFNG","LCK","CD8A","IL2RA","CCR7","PTPRCAP","LTB","CD69","COL17A1","LAMB3","MT1X","KRT5","KRT15","TP63","POSTN","PLVAP","SOX17","IL33","VWF","SELE","SPARCL1","PMEL","TYRP1","TYR","TRPM1","DCT","MLANA","FGFBP1","DEFB1","AQP3","LY6D","S100A14","IGFBP5","LUM","HTRA1","THY1","INHBA","SOD3","GEM","MFAP","COL6A2","MGP","COL6A1","COL6A3","KRT2","TACSTD2","CLDN1","SERPINB5","CLDN4","SLPI","MAL2","SLC25A37","CLEC9A","ALOX5AP","IRF8","WDFY4","RAMP2","CALCRL","ECSCR","PROX1","LYVE1","GNG11","TM4SF1","CDH5","CLDN5","MYCT1","FABP4","MMRN1","IGFBP7","TFAP2A","CCND1","DST","CALD1","RASSF8","ENPP1","THBS2")
+
+library(presto)
+markers <- wilcoxauc(merged_object, assay = "data", seurat_assay = "SCT")
+markers <- top_markers(markers, n = 10, auc_min = 0.5, pct_in_min = 20, pct_out_max = 20)
+
+markers
+
+all_markers<- markers %>%
+  select(-rank) %>% 
+  unclass() %>% 
+  stack() %>%
+  pull(values) %>%
+  unique() %>%
+   .[!is.na(.)]
+
+DotPlot(merged_object, features = all_markers)
+```
+
+
+```{r}
+fov_list <- c("fov", "fov.2", "fov.3", "fov.4", "fov.5", "fov.6", "fov.2.6", "fov.7", "fov.2.7","fov.8")
+
+for (i in 1:10) {
+print(ImageFeaturePlot(merged_object, features = c("PMEL","TYRP1","BCAN","TYR"), fov = fov_list[[i]]))
+}
+```
+
+```{r}
+# Example data frame
+df <- data.frame(
+  Cluster = c(0, 2, 3, 0, 2, 1, 3, 0, 1, 2, 3, 4, 5, 3, 5, 0, 2),
+  Count = c(1, 11, 4, 2, 1, 1, 2, 1227, 1092, 506, 433, 329, 162, 2, 1, 1, 1),
+  Ratio = c(0.0625, 0.6875, 0.25, 0.66666667, 0.33333333, 0.33333333, 0.66666667, 
+            0.32728728, 0.29127767, 0.13496933, 0.11549747, 0.08775674, 0.04321152, 
+            0.66666667, 0.33333333, 1.0, 1.0),
+  Sample = c("MPS1", "MPS1", "MPS1", "MPS5", "MPS5", "MPS8", "MPS8", "MPS13", "MPS13", 
+             "MPS13", "MPS13", "MPS13", "MPS13", "MPS351", "MPS351", "MPS352", "MPS43")
+)
+
+# Load necessary library
+library(ggplot2)
+
+# Define custom order for Sample and Cluster
+sample_order <- c("MPS1", "MPS3", "MPS5", "MPS8", "MPS13", "MPS161", "MPS162", "MPS351", "MPS352", "MPS43")
+cluster_order <- sort(unique(df1$Cluster), na.last = TRUE)
+
+# Convert Sample and Cluster to ordered factors
+df1$Sample <- factor(df1$Sample, levels = sample_order)
+df1$Cluster <- factor(df1$Cluster, levels = cluster_order)
+
+# Plot the stacked proportion bar plot
+ggplot(df1, aes(x = Sample, y = Count, fill = Cluster)) +
+    geom_bar(stat = "identity", position = "fill") + # Color palette and NA handling
+    labs(x = "Sample", y = "Proportion", title = "Proportion Plot by Sample and Cluster", fill = "Cluster") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title = element_text(size = 16), axis.text = element_text(size = 14))
+```
